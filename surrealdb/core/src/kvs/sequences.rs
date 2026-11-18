@@ -595,8 +595,17 @@ impl Sequence {
 					return Err(anyhow::Error::new(Error::QueryTimedout(timeout)));
 				}
 			}
-			if let Ok(r) = Self::check_batch_allocation(sqs, seq, next, batch).await {
-				return Ok(r);
+			match Self::check_batch_allocation(sqs, seq, next, batch).await {
+				Ok(r) => return Ok(r),
+				// LYNX PATCH (t_cc7b): a shutdown-class error is not transient
+				// for this process. Once the storage engine has begun shutting
+				// down it refuses every commit, so retrying here never ends
+				// where no timeout is set (the concurrent index builder's
+				// `next_fts_doc_id`, catalog id allocation), and the spinning
+				// task pins the datastore and its engine lock. Return it, as
+				// the builder and every other caller already handle it.
+				Err(e) if super::is_shutdown_error(&e) => return Err(e),
+				Err(_) => {}
 			}
 			// exponential backoff with full jitter
 			let sleep_ms = rand::rng().random_range(1..=tempo);
